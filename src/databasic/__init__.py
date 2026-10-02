@@ -62,7 +62,7 @@ class Databasic:
             try:
                 self._conn = await self._pool.getconn()
             except BaseException:  # pragma: no cover
-                await self._pool.close()
+                await self.disconnect()
                 raise
 
             self._global_transaction = AsyncTransaction(
@@ -73,10 +73,7 @@ class Databasic:
             try:
                 await self._global_transaction.__aenter__()
             except BaseException:  # pragma: no cover
-                await self._conn.close()
-                self._conn = None
-                self._global_transaction = None
-                await self._pool.close()
+                await self.disconnect()
                 raise
 
     async def disconnect(self) -> None:
