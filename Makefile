@@ -1,4 +1,4 @@
-.PHONY: help static format test clean
+.PHONY: help static format test tox clean
 
 help:
 	@echo "Available targets:"
@@ -6,6 +6,7 @@ help:
 	@echo "  static - run static code analysis"
 	@echo "  format - auto format source code"
 	@echo "  test   - run project tests"
+	@echo "  tox    - run tests across supported versions"
 	@echo "  clean  - remove cache, venv and artifacts"
 
 static:
@@ -20,6 +21,9 @@ format:
 test:
 	uv run pytest
 
+tox:
+	uvx --with tox-uv tox
+
 clean:
-	rm -rf .venv .ruff_cache .pytest_cache .coverage htmlcov
+	rm -rf .venv .ruff_cache .pytest_cache .coverage .tox htmlcov
 	find . -type d -name '__pycache__' -exec rm -rf {} +

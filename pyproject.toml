@@ -3,13 +3,14 @@ name = "databasic"
 version = "0.1.0"
 description = "Database connection helper"
 readme = "README.md"
+license = "MIT"
 authors = [
     { name = "ansipunk", email = "ansipunk@proton.me" }
 ]
-requires-python = ">=3.14"
+requires-python = ">=3.11,<3.16"
 dependencies = [
-    "psycopg[binary,pool]>=3.3.6",
-    "sqlalchemy>=2.1.1",
+    "psycopg[binary,pool]>=3,<4",
+    "sqlalchemy>=2,<2.2",
 ]
 
 [build-system]
@@ -18,16 +19,16 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
-    "pytest>=9.1.1",
-    "pytest-asyncio>=1.4.0",
-    "pytest-cov>=7.1.0",
-    "ruff>=0.16.9",
+    "pytest>=9,<10",
+    "pytest-asyncio>=1,<2",
+    "pytest-cov>=7,<8",
+    "ruff>=0.16.10",
     "ty>=0.0.84",
 ]
 
 [tool.pytest]
 addopts = [
-    "--cov", "src",
+    "--cov", "databasic",
     "--cov-report", "term-missing",
     "--cov-report", "html",
     "--cov-fail-under", "100",

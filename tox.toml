@@ -1,0 +1,24 @@
+env_list = [
+  "test",
+  { product = [
+    { prefix = "py3", start = 11, stop = 15 },
+    [ "sa20", "sa21" ],
+  ] },
+]
+
+[env_run_base]
+deps = [
+  { replace = "if", condition = "factor.sa20", then = [ "SQLAlchemy>=2,<2.1" ], extend = true },
+  { replace = "if", condition = "factor.sa21", then = [ "SQLAlchemy>=2.1,<2.2" ], extend = true },
+  "pytest>=9,<10",
+  "pytest-asyncio>=1,<2",
+  "pytest-cov>=7,<8",
+  "ruff>=0.16.10",
+  "ty>=0.0.84",
+]
+commands = [
+  [ "pytest", { replace = "posargs", default = [ "tests" ], extend = true } ],
+  [ "ruff", { replace = "posargs", default = [ "check", "src", "tests" ], extend = true } ],
+  [ "ruff", { replace = "posargs", default = [ "format", "--check", "src", "tests" ], extend = true } ],
+  [ "ty", { replace = "posargs", default = [ "check", "src" ], extend = true } ],
+]

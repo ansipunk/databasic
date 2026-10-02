@@ -91,7 +91,7 @@ class Databasic:
         await self._pool.close()
 
     @asynccontextmanager
-    async def session(self) -> AsyncIterator[Session]:
+    async def session(self) -> AsyncIterator["Session"]:
         if self._pool.closed:
             raise DatabaseNotConnectedError
 
