@@ -61,7 +61,7 @@ class Databasic:
         if self._force_rollback:
             try:
                 self._conn = await self._pool.getconn()
-            except BaseException:
+            except BaseException:  # pragma: no cover
                 await self._pool.close()
                 raise
 
@@ -72,7 +72,7 @@ class Databasic:
 
             try:
                 await self._global_transaction.__aenter__()
-            except BaseException:
+            except BaseException:  # pragma: no cover
                 await self._conn.close()
                 self._conn = None
                 self._global_transaction = None

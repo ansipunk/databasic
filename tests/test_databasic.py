@@ -1,3 +1,4 @@
+from contextlib import suppress
 from typing import Any, cast
 
 import pytest
@@ -61,14 +62,11 @@ async def test_failed_transaction(temp_table: Table, test_db_conninfo: str):
     await db.connect()
 
     async with db.session() as session:
-        try:
+        with suppress(RuntimeError):
             async with session.transaction():
                 query = temp_table.insert().values(int_val=1)
                 await session.execute(query)
-
                 raise RuntimeError
-        except:  # noqa: E722, S110
-            pass
 
         query = temp_table.select()
         rows = await session.fetch_all(query)
@@ -163,3 +161,40 @@ async def test_basic_operations(temp_table: Table, test_db_conninfo: str):
         assert len(fetched_rows) == 0
 
     await db.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_context_manager(temp_table: Table, test_db_conninfo: str):
+    async with databasic.Databasic(test_db_conninfo) as db:  # noqa: SIM117
+        async with db.session() as session:
+            query = temp_table.select()
+            row = await session.fetch_one(query)
+            assert row is None
+
+
+@pytest.mark.asyncio
+async def test_force_rollback_disabled(temp_table: Table, test_db_conninfo: str):
+    async with databasic.Databasic(test_db_conninfo, force_rollback=False) as db:  # noqa: SIM117
+        async with db.session() as session:
+            query = temp_table.insert().values(int_val=0)
+            await session.execute(query)
+
+    async with databasic.Databasic(test_db_conninfo) as db:  # noqa: SIM117
+        async with db.session() as session:
+            query = temp_table.select()
+            row = await session.fetch_one(query)
+            assert row is not None
+
+
+@pytest.mark.asyncio
+async def test_force_rollback_enabled(temp_table: Table, test_db_conninfo: str):
+    async with databasic.Databasic(test_db_conninfo, force_rollback=True) as db:  # noqa: SIM117
+        async with db.session() as session:
+            query = temp_table.insert().values(int_val=0)
+            await session.execute(query)
+
+    async with databasic.Databasic(test_db_conninfo) as db:  # noqa: SIM117
+        async with db.session() as session:
+            query = temp_table.select()
+            row = await session.fetch_one(query)
+            assert row is None
