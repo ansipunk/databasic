@@ -6,6 +6,10 @@ SQLAlchemy Core handles query construction and compilation. Databasic handles
 connection and transaction lifetimes and executes the resulting queries directly
 through psycopg.
 
+SQLAlchemy bind processors convert input values for psycopg, including JSON/JSONB
+values and custom `TypeDecorator` bind processing. Returned values are decoded
+by psycopg; SQLAlchemy result processors are not applied.
+
 ## Usage
 
 ```python
@@ -128,7 +132,9 @@ await session.execute_many(
 ```
 
 The statement must define its values using explicit bind parameters. Values are
-supplied exclusively through the parameter mappings.
+supplied exclusively through the parameter mappings. Expanding parameters
+(such as variable-length `IN` lists) and literal-execute parameters are not
+supported by `execute_many()`.
 
 #### `fetch_one()`
 

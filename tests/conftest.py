@@ -2,9 +2,11 @@ import os
 import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass
+from typing import Any
 
 import pytest
 import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import JSONB
 
 
 @dataclass
@@ -70,6 +72,8 @@ def temp_table(test_db_engine: sa.Engine) -> Iterator[sa.Table]:
         sa.Column("id", sa.Integer, primary_key=True),
         sa.Column("int_val", sa.Integer, nullable=False),
         sa.Column("str_val", sa.Text, nullable=True),
+        sa.Column("json_val", sa.JSON, nullable=True),
+        sa.Column("jsonb_val", JSONB, nullable=True),
     )
 
     with test_db_engine.begin() as conn:
@@ -80,3 +84,28 @@ def temp_table(test_db_engine: sa.Engine) -> Iterator[sa.Table]:
     finally:
         with test_db_engine.begin() as conn:
             table.drop(conn)
+
+
+@pytest.fixture(
+    params=[
+        pytest.param(
+            {
+                "name": "Alice",
+                "count": 42,
+                "ratio": 1.5,
+                "active": True,
+                "missing": None,
+                "nested": {"items": [1, "two", False, None]},
+            },
+            id="object",
+        ),
+        pytest.param([1, "two", {"nested": []}, False, None], id="array"),
+        pytest.param("Hello, 世界", id="string"),
+        pytest.param(42, id="integer"),
+        pytest.param(1.5, id="float"),
+        pytest.param(True, id="boolean"),
+        pytest.param(None, id="null"),
+    ]
+)
+def json_value(request: pytest.FixtureRequest) -> Any:
+    return request.param

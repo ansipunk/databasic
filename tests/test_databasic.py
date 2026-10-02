@@ -2,7 +2,17 @@ from contextlib import suppress
 from typing import Any, cast
 
 import pytest
-from sqlalchemy import Table, bindparam
+from sqlalchemy import (
+    Engine,
+    String,
+    Table,
+    TypeDecorator,
+    bindparam,
+    literal,
+    select,
+    tuple_,
+)
+from sqlalchemy.schema import CreateTable, DropTable
 
 import databasic
 
@@ -120,6 +130,182 @@ async def test_execute_many(temp_table: Table, test_db_conninfo: str):
             assert str(row["int_val"]) == row["str_val"]
 
     await db.disconnect()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("column_name", ["json_val", "jsonb_val"])
+async def test_insert_json(
+    temp_table: Table,
+    test_db_conninfo: str,
+    column_name: str,
+    json_value: Any,
+):
+    async with databasic.Databasic(test_db_conninfo) as db:
+        async with db.session() as session:
+            query = temp_table.insert().values(int_val=1, **{column_name: json_value})
+            assert await session.execute(query) == 1
+
+        async with db.session() as session:
+            # None is JSON null with the default JSON type, not SQL NULL.
+            query = select(temp_table.c[column_name]).where(
+                temp_table.c[column_name].is_not(None)
+            )
+            assert await session.fetch_one(query) == {column_name: json_value}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("column_name", ["json_val", "jsonb_val"])
+async def test_execute_many_json(
+    temp_table: Table,
+    test_db_conninfo: str,
+    column_name: str,
+    json_value: Any,
+):
+    values = [json_value, {"items": [], "nested": {}}]
+
+    async with databasic.Databasic(test_db_conninfo) as db:
+        async with db.session() as session:
+            query = temp_table.insert().values(
+                int_val=bindparam("int_val"),
+                **{column_name: bindparam(column_name)},
+            )
+            params = [
+                {"int_val": index, column_name: value}
+                for index, value in enumerate(values)
+            ]
+            assert await session.execute_many(query, iter(params)) == len(values)
+
+        async with db.session() as session:
+            query = (
+                select(temp_table.c[column_name])
+                .where(temp_table.c[column_name].is_not(None))
+                .order_by(temp_table.c.int_val)
+            )
+            assert await session.fetch_all(query) == [
+                {column_name: value} for value in values
+            ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("column_name", ["json_val", "jsonb_val"])
+async def test_fetch_json(
+    temp_table: Table,
+    test_db_engine: Engine,
+    test_db_conninfo: str,
+    column_name: str,
+    json_value: Any,
+):
+    with test_db_engine.begin() as conn:
+        conn.execute(temp_table.insert().values(int_val=1, **{column_name: json_value}))
+
+    async with databasic.Databasic(test_db_conninfo) as db:  # noqa: SIM117
+        async with db.session() as session:
+            query = select(temp_table.c[column_name])
+            assert await session.fetch_one(query) == {column_name: json_value}
+            assert await session.fetch_all(query) == [{column_name: json_value}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tuple_values", [False, True], ids=["single", "tuple"])
+async def test_jsonb_expanding_parameters(
+    temp_table: Table,
+    test_db_conninfo: str,
+    json_value: Any,
+    tuple_values: bool,
+):
+    async with databasic.Databasic(test_db_conninfo) as db:  # noqa: SIM117
+        async with db.session() as session:
+            await session.execute(
+                temp_table.insert().values(int_val=1, jsonb_val=json_value)
+            )
+            if tuple_values:
+                columns = tuple_(temp_table.c.int_val, temp_table.c.jsonb_val)
+                condition = columns.in_(
+                    bindparam(
+                        "values", [(1, json_value)], type_=columns.type, expanding=True
+                    )
+                )
+            else:
+                condition = temp_table.c.jsonb_val.in_(
+                    bindparam(
+                        "values",
+                        [json_value],
+                        type_=temp_table.c.jsonb_val.type,
+                        expanding=True,
+                    )
+                )
+            query = select(temp_table.c.jsonb_val).where(condition)
+            assert await session.fetch_all(query) == [{"jsonb_val": json_value}]
+
+
+class PrefixString(TypeDecorator[str]):
+    impl = String
+    cache_ok = True
+
+    def process_bind_param(self, value: Any, dialect: Any) -> str:
+        _ = dialect
+        return f"stored:{value}"
+
+
+@pytest.mark.asyncio
+async def test_custom_bind_processor(test_db_conninfo: str):
+    async with databasic.Databasic(test_db_conninfo) as db:  # noqa: SIM117
+        async with db.session() as session:
+            query = select(literal("Alice", type_=PrefixString()).label("value"))
+            assert await session.fetch_one(query) == {"value": "stored:Alice"}
+
+
+@pytest.mark.asyncio
+async def test_execute_many_custom_bind_processor(
+    temp_table: Table,
+    test_db_conninfo: str,
+):
+    params = [
+        {"int_val": 1, "name.with.dots": "Alice"},
+        {"int_val": 2, "name.with.dots": "Bob"},
+    ]
+    async with databasic.Databasic(test_db_conninfo) as db:  # noqa: SIM117
+        async with db.session() as session:
+            query = temp_table.insert().values(
+                int_val=bindparam("int_val"),
+                str_val=bindparam("name.with.dots", type_=PrefixString()),
+            )
+            assert await session.execute_many(query, iter(params)) == 2
+            query = select(temp_table.c.str_val).order_by(temp_table.c.int_val)
+            assert await session.fetch_all(query) == [
+                {"str_val": "stored:Alice"},
+                {"str_val": "stored:Bob"},
+            ]
+    assert params == [
+        {"int_val": 1, "name.with.dots": "Alice"},
+        {"int_val": 2, "name.with.dots": "Bob"},
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "bind_options",
+    [{"expanding": True}, {"literal_execute": True}],
+    ids=["expanding", "literal_execute"],
+)
+async def test_execute_many_postcompile_parameters(
+    test_db_conninfo: str,
+    bind_options: dict[str, bool],
+):
+    async with databasic.Databasic(test_db_conninfo) as db:  # noqa: SIM117
+        async with db.session() as session:
+            query = select(bindparam("value", type_=String, **bind_options))  # ty: ignore[invalid-argument-type]
+            with pytest.raises(ValueError, match="does not support"):
+                await session.execute_many(query, [{"value": "Alice"}])
+
+
+@pytest.mark.asyncio
+async def test_ddl(temp_table: Table, test_db_conninfo: str):
+    async with databasic.Databasic(test_db_conninfo) as db:  # noqa: SIM117
+        async with db.session() as session:
+            await session.execute(DropTable(temp_table))
+            await session.execute(CreateTable(temp_table))
+            assert await session.fetch_all(temp_table.select()) == []
 
 
 @pytest.mark.asyncio

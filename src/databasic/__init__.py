@@ -7,12 +7,13 @@ from psycopg import AsyncConnection as BaseAsyncConnection
 from psycopg import AsyncCursor as BaseAsyncCursor
 from psycopg import AsyncTransaction
 from psycopg_pool import AsyncConnectionPool as BaseAsyncConnectionPool
-from sqlalchemy.dialects import postgresql
+from sqlalchemy.dialects.postgresql import psycopg
+from sqlalchemy.sql.compiler import Compiled, SQLCompiler
 from sqlalchemy.sql.elements import ClauseElement
 
 __all__ = [
-    "DatabaseAlreadyConnectedError",
     "DatabaseNotConnectedError",
+    "DatabaseWasAlreadyOpenedError",
     "Databasic",
     "DatabasicError",
     "Row",
@@ -151,15 +152,25 @@ class Session:
             )
         """
 
-        compiled_query, _ = _compile_query(query)
+        compiled = _compile_query(query)
+        if isinstance(compiled, SQLCompiler) and (
+            compiled.post_compile_params or compiled.literal_execute_params
+        ):
+            raise ValueError(
+                "execute_many() does not support expanding or literal-execute parameters"
+            )
 
+        processed_params = (_prepare_query(compiled, values)[1] for values in params)
         async with self._conn.cursor() as cursor:
-            await cursor.executemany(compiled_query, params)
+            await cursor.executemany(
+                cast(LiteralString, compiled.string),
+                processed_params,
+            )
             return cursor.rowcount
 
     @asynccontextmanager
     async def _execute(self, statement: ClauseElement) -> AsyncIterator[AsyncCursor]:
-        query, params = _compile_query(statement)
+        query, params = _prepare_query(_compile_query(statement))
 
         async with self._conn.cursor() as cursor:
             await cursor.execute(query, params)
@@ -192,9 +203,28 @@ def _dict_row_factory(cursor: AsyncCursor) -> Callable[[Sequence[Any]], Row]:
     return make_row
 
 
-def _compile_query(statement: ClauseElement) -> tuple[LiteralString, dict[str, Any]]:
-    compiled = statement.compile(
-        dialect=postgresql.dialect(paramstyle="pyformat"),
-        compile_kwargs={"render_postcompile": True},
+def _compile_query(statement: ClauseElement) -> Compiled:
+    return statement.compile(dialect=psycopg.dialect(paramstyle="pyformat"))
+
+
+def _prepare_query(
+    compiled: Compiled,
+    params: Mapping[str, Any] | None = None,
+) -> tuple[LiteralString, dict[str, Any]]:
+    if not isinstance(compiled, SQLCompiler):
+        return cast(LiteralString, compiled.string), dict(params or {})
+
+    expanded = compiled.construct_expanded_state(
+        dict(params) if params is not None else None,
+        escape_names=False,
     )
-    return cast(LiteralString, compiled.string), compiled.params
+
+    processors = cast(dict[str, Callable[[Any], Any]], dict(compiled._bind_processors))
+    processors.update(expanded.processors)
+    processed_params = {
+        compiled.escaped_bind_names.get(name, name): (
+            processors[name](value) if name in processors else value
+        )
+        for name, value in expanded.parameters.items()
+    }
+    return cast(LiteralString, expanded.statement), processed_params

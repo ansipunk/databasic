@@ -14,7 +14,7 @@ help:
 static:
 	uv run ruff check src tests
 	uv run ruff format --check src tests
-	uv run ty check src
+	uv run ty check src tests
 
 format:
 	uv run ruff check --fix src tests
