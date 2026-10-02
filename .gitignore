@@ -7,4 +7,6 @@ __pycache__/
 
 htmlcov/
 
+dist/
+
 !.gitignore
