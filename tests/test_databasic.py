@@ -198,3 +198,14 @@ async def test_force_rollback_enabled(temp_table: Table, test_db_conninfo: str):
             query = temp_table.select()
             row = await session.fetch_one(query)
             assert row is None
+
+
+@pytest.mark.asyncio
+async def test_complex_queries(temp_table: Table, test_db_conninfo: str):
+    async with databasic.Databasic(test_db_conninfo) as db:  # noqa: SIM117
+        async with db.session() as session:
+            query = temp_table.select().where(
+                temp_table.c.int_val.in_([1, 2]),
+            )
+            row = await session.fetch_one(query)
+            assert row is None

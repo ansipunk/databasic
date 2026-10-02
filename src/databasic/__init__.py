@@ -191,5 +191,8 @@ def _dict_row_factory(cursor: AsyncCursor) -> Callable[[Sequence[Any]], Row]:
 
 
 def _compile_query(statement: ClauseElement) -> tuple[LiteralString, dict[str, Any]]:
-    compiled = statement.compile(dialect=postgresql.dialect(paramstyle="pyformat"))
+    compiled = statement.compile(
+        dialect=postgresql.dialect(paramstyle="pyformat"),
+        compile_kwargs={"render_postcompile": True},
+    )
     return cast(LiteralString, compiled.string), compiled.params
