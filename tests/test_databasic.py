@@ -17,12 +17,24 @@ async def test_get_session_database_not_connected(test_db_conninfo: str):
 
 
 @pytest.mark.asyncio
+async def test_reuse_instance(test_db_conninfo: str):
+    db = databasic.Databasic(test_db_conninfo)
+
+    async with db:
+        pass
+
+    with pytest.raises(databasic.DatabaseWasAlreadyOpenedError):
+        async with db:
+            pass
+
+
+@pytest.mark.asyncio
 async def test_connect_connected_database(test_db_conninfo: str):
     db = databasic.Databasic(test_db_conninfo)
 
     await db.connect()
 
-    with pytest.raises(databasic.DatabaseAlreadyConnectedError):
+    with pytest.raises(databasic.DatabaseWasAlreadyOpenedError):
         await db.connect()
 
     await db.disconnect()

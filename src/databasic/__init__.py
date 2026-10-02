@@ -30,6 +30,7 @@ class Databasic:
     _conn: AsyncConnection | None = None
     _global_transaction: AsyncTransaction | None = None
     _force_rollback: bool = False
+    _opened: bool = False
 
     def __init__(self, conninfo: str, *, force_rollback: bool = False):
         self._pool = AsyncConnectionPool(
@@ -53,10 +54,11 @@ class Databasic:
         await self.disconnect()
 
     async def connect(self) -> None:
-        if not self._pool.closed:
-            raise DatabaseAlreadyConnectedError
+        if self._opened:
+            raise DatabaseWasAlreadyOpenedError
 
         await self._pool.open(wait=True)
+        self._opened = True
 
         if self._force_rollback:
             try:
@@ -173,7 +175,7 @@ class DatabasicError(Exception):
     pass
 
 
-class DatabaseAlreadyConnectedError(DatabasicError):
+class DatabaseWasAlreadyOpenedError(DatabasicError):
     pass
 
 

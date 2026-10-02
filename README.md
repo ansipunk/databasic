@@ -49,6 +49,19 @@ finally:
 A session is a transaction. It commits when the context exits successfully and
 rolls back when it exits with an exception.
 
+A previously closed database cannot be reused. This will throw an exception.
+
+```python
+db = Databasic("postgresql://user:password@localhost/database")
+
+async with db:
+    pass
+
+# Will throw an exception.
+async with db:
+    pass
+```
+
 ## API
 
 ### `Databasic`
