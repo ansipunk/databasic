@@ -121,15 +121,15 @@ class Session:
         async with self._execute(query) as cursor:
             return await cursor.fetchall()
 
-    async def execute(self, query: ClauseElement) -> None:
-        async with self._execute(query):
-            pass
+    async def execute(self, query: ClauseElement) -> int:
+        async with self._execute(query) as cursor:
+            return cursor.rowcount
 
     async def execute_many(
         self,
         query: ClauseElement,
         params: Iterable[Mapping[str, Any]],
-    ) -> None:
+    ) -> int:
         """Execute a query multiple times with different parameters.
 
         The query must define all values as explicit bind parameters. Values
@@ -156,6 +156,7 @@ class Session:
 
         async with self._conn.cursor() as cursor:
             await cursor.executemany(compiled_query, params)
+            return cursor.rowcount
 
     @asynccontextmanager
     async def _execute(self, statement: ClauseElement) -> AsyncIterator[AsyncCursor]:
