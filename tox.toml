@@ -7,6 +7,9 @@ env_list = [
 ]
 
 [env_run_base]
+pass_env = [
+  "DATABASIC_TEST_DB_*",
+]
 deps = [
   { replace = "if", condition = "factor.sa20", then = [ "SQLAlchemy>=2,<2.1" ], extend = true },
   { replace = "if", condition = "factor.sa21", then = [ "SQLAlchemy>=2.1,<2.2" ], extend = true },

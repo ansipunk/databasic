@@ -9,4 +9,6 @@ htmlcov/
 
 dist/
 
+!.github
+
 !.gitignore
