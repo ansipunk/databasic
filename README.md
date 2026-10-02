@@ -10,6 +10,16 @@ SQLAlchemy bind processors convert input values for psycopg, including JSON/JSON
 values and custom `TypeDecorator` bind processing. Returned values are decoded
 by psycopg; SQLAlchemy result processors are not applied.
 
+## Installation
+
+```sh
+uv add databasic
+
+# or
+
+pip install databasic
+```
+
 ## Usage
 
 ```python
