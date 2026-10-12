@@ -1,6 +1,6 @@
 [project]
 name = "databasic"
-version = "0.2.1"
+version = "0.2.2"
 description = "Asynchronous database connection manager and query executor"
 readme = "README.md"
 license = "MIT"
