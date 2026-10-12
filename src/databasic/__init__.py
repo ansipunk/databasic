@@ -1,4 +1,4 @@
-from collections.abc import AsyncIterator, Callable, Iterable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Callable, Iterable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from types import TracebackType
 from typing import Any, LiteralString, Self, cast
@@ -94,7 +94,7 @@ class Databasic:
         await self._pool.close()
 
     @asynccontextmanager
-    async def session(self) -> AsyncIterator["Session"]:
+    async def session(self) -> AsyncGenerator["Session"]:
         if self._pool.closed:
             raise DatabaseNotConnectedError
 
@@ -169,7 +169,7 @@ class Session:
             return cursor.rowcount
 
     @asynccontextmanager
-    async def _execute(self, statement: ClauseElement) -> AsyncIterator[AsyncCursor]:
+    async def _execute(self, statement: ClauseElement) -> AsyncGenerator[AsyncCursor]:
         query, params = _prepare_query(_compile_query(statement))
 
         async with self._conn.cursor() as cursor:
@@ -177,7 +177,7 @@ class Session:
             yield cursor
 
     @asynccontextmanager
-    async def transaction(self) -> AsyncIterator[None]:
+    async def transaction(self) -> AsyncGenerator[None]:
         async with self._conn.transaction():
             yield
 
