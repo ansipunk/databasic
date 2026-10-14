@@ -132,10 +132,11 @@ toml = [
 
 [[package]]
 name = "databasic"
-version = "0.2.2"
+version = "0.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "psycopg", extra = ["binary", "pool"] },
+    { name = "psycopg-pool" },
     { name = "sqlalchemy" },
 ]
 
@@ -151,7 +152,8 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3,<4" },
+    { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.2.0,<4" },
+    { name = "psycopg-pool", specifier = ">=3.2.0,<4" },
     { name = "sqlalchemy", specifier = ">=2,<2.2" },
 ]
 

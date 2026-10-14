@@ -1,10 +1,19 @@
-from collections.abc import AsyncGenerator, Callable, Iterable, Mapping, Sequence
+from collections.abc import (
+    AsyncGenerator,
+    AsyncIterator,
+    Callable,
+    Iterable,
+    Mapping,
+    Sequence,
+)
 from contextlib import asynccontextmanager
 from types import TracebackType
 from typing import Any, LiteralString, Self, cast
+from uuid import uuid4
 
 from psycopg import AsyncConnection as BaseAsyncConnection
 from psycopg import AsyncCursor as BaseAsyncCursor
+from psycopg import AsyncServerCursor as BaseAsyncServerCursor
 from psycopg import AsyncTransaction
 from psycopg_pool import AsyncConnectionPool as BaseAsyncConnectionPool
 from sqlalchemy.dialects.postgresql import psycopg
@@ -24,6 +33,7 @@ Row = dict[str, Any]
 AsyncConnection = BaseAsyncConnection[Row]
 AsyncConnectionPool = BaseAsyncConnectionPool[AsyncConnection]
 AsyncCursor = BaseAsyncCursor[Row]
+AsyncServerCursor = BaseAsyncServerCursor[Row]
 
 
 class Databasic:
@@ -33,10 +43,22 @@ class Databasic:
     _force_rollback: bool = False
     _opened: bool = False
 
-    def __init__(self, conninfo: str, *, force_rollback: bool = False):
+    def __init__(
+        self,
+        conninfo: str,
+        *,
+        force_rollback: bool = False,
+        pool_min_size: int = 4,
+        pool_max_size: int = 4,
+    ):
+        if pool_min_size > pool_max_size:
+            raise ValueError("Pool max size cannot be less than min size")
+
         self._pool = AsyncConnectionPool(
             conninfo,
             open=False,
+            min_size=pool_min_size,
+            max_size=pool_max_size,
             kwargs={"row_factory": _dict_row_factory},
         )
         self._force_rollback = force_rollback
@@ -125,6 +147,18 @@ class Session:
         async with self._execute(query) as cursor:
             return cursor.rowcount
 
+    async def stream(
+        self, query: ClauseElement, *, prefetch_size: int = 256
+    ) -> AsyncIterator[Row]:
+        if prefetch_size < 1:
+            raise ValueError("prefetch_size must be at least 1")
+
+        async with self._execute_with_server_cursor(query) as cursor:
+            cursor.itersize = prefetch_size
+
+            async for row in cursor:
+                yield row
+
     async def execute_many(
         self,
         query: ClauseElement,
@@ -173,6 +207,16 @@ class Session:
         query, params = _prepare_query(_compile_query(statement))
 
         async with self._conn.cursor() as cursor:
+            await cursor.execute(query, params)
+            yield cursor
+
+    @asynccontextmanager
+    async def _execute_with_server_cursor(
+        self, statement: ClauseElement
+    ) -> AsyncGenerator[AsyncServerCursor]:
+        query, params = _prepare_query(_compile_query(statement))
+
+        async with self._conn.cursor(name=f"databasic_cursor_{uuid4()}") as cursor:
             await cursor.execute(query, params)
             yield cursor
 

@@ -1,4 +1,5 @@
-from contextlib import suppress
+from collections.abc import AsyncGenerator
+from contextlib import aclosing, suppress
 from typing import Any, cast
 
 import pytest
@@ -10,11 +11,33 @@ from sqlalchemy import (
     bindparam,
     literal,
     select,
+    text,
     tuple_,
 )
 from sqlalchemy.schema import CreateTable, DropTable
 
 import databasic
+
+
+def test_pool_min_size_exceeds_max_size(test_db_conninfo: str):
+    with pytest.raises(ValueError):
+        databasic.Databasic(
+            test_db_conninfo,
+            pool_min_size=2,
+            pool_max_size=1,
+        )
+
+
+def test_valid_pool_size(test_db_conninfo: str):
+    db = databasic.Databasic(
+        test_db_conninfo,
+        pool_min_size=2,
+        pool_max_size=3,
+    )
+
+    assert db._pool.min_size == 2
+    assert db._pool.max_size == 3
+    assert db._pool.closed
 
 
 @pytest.mark.asyncio
@@ -203,6 +226,9 @@ async def test_fetch_json(
             query = select(temp_table.c[column_name])
             assert await session.fetch_one(query) == {column_name: json_value}
             assert await session.fetch_all(query) == [{column_name: json_value}]
+            assert [row async for row in session.stream(query)] == [
+                {column_name: json_value}
+            ]
 
 
 @pytest.mark.asyncio
@@ -236,6 +262,9 @@ async def test_jsonb_expanding_parameters(
                 )
             query = select(temp_table.c.jsonb_val).where(condition)
             assert await session.fetch_all(query) == [{"jsonb_val": json_value}]
+            assert [row async for row in session.stream(query)] == [
+                {"jsonb_val": json_value}
+            ]
 
 
 class PrefixString(TypeDecorator[str]):
@@ -297,6 +326,94 @@ async def test_execute_many_postcompile_parameters(
             query = select(bindparam("value", type_=String, **bind_options))  # ty: ignore[invalid-argument-type]
             with pytest.raises(ValueError, match="does not support"):
                 await session.execute_many(query, [{"value": "Alice"}])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prefetch_size", [None, 1, 2, 256, 1024])
+async def test_stream_rows(
+    temp_table: Table, test_db_conninfo: str, prefetch_size: int | None
+):
+    values = [
+        {"int_val": index, "str_val": str(index) if index % 2 else None}
+        for index in range(513)
+    ]
+
+    async with databasic.Databasic(test_db_conninfo) as db:  # noqa: SIM117
+        async with db.session() as session:
+            await session.execute_many(
+                temp_table.insert().values(
+                    int_val=bindparam("int_val"), str_val=bindparam("str_val")
+                ),
+                values,
+            )
+            query = select(temp_table.c.int_val, temp_table.c.str_val).order_by(
+                temp_table.c.int_val
+            )
+            # Omitting the argument exercises the default batch size.
+            stream = (
+                session.stream(query)
+                if prefetch_size is None
+                else session.stream(query, prefetch_size=prefetch_size)
+            )
+            assert [row async for row in stream] == values
+
+
+@pytest.mark.asyncio
+async def test_stream_empty_result(temp_table: Table, test_db_conninfo: str):
+    async with databasic.Databasic(test_db_conninfo) as db:  # noqa: SIM117
+        async with db.session() as session:
+            assert [row async for row in session.stream(temp_table.select())] == []
+
+
+@pytest.mark.asyncio
+async def test_stream_invalid_prefetch_size(test_db_conninfo: str):
+    async with databasic.Databasic(test_db_conninfo) as db:  # noqa: SIM117
+        async with db.session() as session:
+            with pytest.raises(ValueError):
+                async for _ in session.stream(select(literal(1)), prefetch_size=0):
+                    pytest.fail("An invalid prefetch size must not yield rows")
+
+
+@pytest.mark.asyncio
+async def test_stream_custom_bind_processor(test_db_conninfo: str):
+    async with databasic.Databasic(test_db_conninfo) as db:  # noqa: SIM117
+        async with db.session() as session:
+            query = select(literal("Alice", type_=PrefixString()).label("value"))
+            assert [row async for row in session.stream(query)] == [
+                {"value": "stored:Alice"}
+            ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("close_early", [False, True], ids=["exhausted", "closed"])
+async def test_stream_closes_server_cursor(test_db_conninfo: str, close_early: bool):
+    cursor_query = text(
+        "SELECT name FROM pg_cursors WHERE name LIKE 'databasic_cursor_%'"
+    )
+    query = text("SELECT generate_series(1, 3) AS value")
+
+    async with databasic.Databasic(test_db_conninfo) as db:  # noqa: SIM117
+        async with db.session() as session:
+            assert await session.fetch_all(cursor_query) == []
+            stream = cast(
+                AsyncGenerator[databasic.Row, None],
+                session.stream(query, prefetch_size=1),
+            )
+            async with aclosing(stream):
+                assert await anext(stream) == {"value": 1}
+                # The stream uses a live, named server-side cursor.
+                assert len(await session.fetch_all(cursor_query)) == 1
+                if not close_early:
+                    assert [row async for row in stream] == [
+                        {"value": 2},
+                        {"value": 3},
+                    ]
+                    assert await session.fetch_all(cursor_query) == []
+            assert await session.fetch_all(cursor_query) == []
+            # Closing a stream does not close its session's connection.
+            assert await session.fetch_one(select(literal(1).label("value"))) == {
+                "value": 1
+            }
 
 
 @pytest.mark.asyncio

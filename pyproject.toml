@@ -1,9 +1,10 @@
 [project]
 name = "databasic"
-version = "0.2.2"
+version = "0.3.0"
 description = "Asynchronous database connection manager and query executor"
 readme = "README.md"
 license = "MIT"
+license-files = ["LICENSE"]
 authors = [
     { name = "ansipunk", email = "ansipunk@proton.me" }
 ]
@@ -23,7 +24,8 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "psycopg[binary,pool]>=3,<4",
+    "psycopg[binary,pool]>=3.2.0,<4",
+    "psycopg-pool>=3.2.0,<4",
     "sqlalchemy>=2,<2.2",
 ]
 
