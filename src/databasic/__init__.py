@@ -1,51 +1,37 @@
-from collections.abc import (
-    AsyncGenerator,
-    AsyncIterator,
-    Callable,
-    Iterable,
-    Mapping,
-    Sequence,
-)
+from collections.abc import AsyncGenerator, AsyncIterator, Iterable, Mapping
 from contextlib import asynccontextmanager
 from types import TracebackType
-from typing import Any, LiteralString, Self, cast
-from uuid import uuid4
+from typing import Any, Self
 
-from psycopg import AsyncConnection as BaseAsyncConnection
-from psycopg import AsyncCursor as BaseAsyncCursor
-from psycopg import AsyncServerCursor as BaseAsyncServerCursor
-from psycopg import AsyncTransaction
-from psycopg_pool import AsyncConnectionPool as BaseAsyncConnectionPool
-from sqlalchemy.dialects.postgresql import psycopg
-from sqlalchemy.sql.compiler import Compiled, SQLCompiler
-from sqlalchemy.sql.elements import ClauseElement
+from sqlalchemy import URL, Executable
+from sqlalchemy.ext.asyncio import (
+    AsyncConnection,
+    AsyncEngine,
+    AsyncTransaction,
+    create_async_engine,
+)
+from sqlalchemy.pool import AsyncAdaptedQueuePool
 
 __all__ = [
     "DatabaseNotConnectedError",
     "DatabaseWasAlreadyOpenedError",
     "Databasic",
     "DatabasicError",
-    "Row",
     "Session",
 ]
 
-Row = dict[str, Any]
-AsyncConnection = BaseAsyncConnection[Row]
-AsyncConnectionPool = BaseAsyncConnectionPool[AsyncConnection]
-AsyncCursor = BaseAsyncCursor[Row]
-AsyncServerCursor = BaseAsyncServerCursor[Row]
-
 
 class Databasic:
-    _pool: AsyncConnectionPool
+    _engine: AsyncEngine
     _conn: AsyncConnection | None = None
     _global_transaction: AsyncTransaction | None = None
     _force_rollback: bool = False
     _opened: bool = False
+    _connected: bool = False
 
     def __init__(
         self,
-        conninfo: str,
+        url: str | URL,
         *,
         force_rollback: bool = False,
         pool_min_size: int = 4,
@@ -53,13 +39,14 @@ class Databasic:
     ):
         if pool_min_size > pool_max_size:
             raise ValueError("Pool max size cannot be less than min size")
+        if pool_min_size < 1:
+            raise ValueError("Pool min size must be at least 1")
 
-        self._pool = AsyncConnectionPool(
-            conninfo,
-            open=False,
-            min_size=pool_min_size,
-            max_size=pool_max_size,
-            kwargs={"row_factory": _dict_row_factory},
+        self._engine = create_async_engine(
+            url,
+            poolclass=AsyncAdaptedQueuePool,
+            pool_size=pool_min_size,
+            max_overflow=pool_max_size - pool_min_size,
         )
         self._force_rollback = force_rollback
 
@@ -80,53 +67,50 @@ class Databasic:
         if self._opened:
             raise DatabaseWasAlreadyOpenedError
 
-        await self._pool.open(wait=True)
+        try:
+            conn = await self._engine.connect()
+            try:
+                if self._force_rollback:
+                    self._global_transaction = await conn.begin()
+                    self._conn = conn
+            finally:
+                if self._conn is None:
+                    await conn.close()
+        except BaseException:
+            await self._engine.dispose()
+            raise
+
         self._opened = True
-
-        if self._force_rollback:
-            try:
-                self._conn = await self._pool.getconn()
-            except BaseException:  # pragma: no cover
-                await self.disconnect()
-                raise
-
-            self._global_transaction = AsyncTransaction(
-                self._conn,
-                force_rollback=True,
-            )
-
-            try:
-                await self._global_transaction.__aenter__()
-            except BaseException:  # pragma: no cover
-                await self.disconnect()
-                raise
+        self._connected = True
 
     async def disconnect(self) -> None:
-        if self._pool.closed:
+        if not self._connected:
             raise DatabaseNotConnectedError
 
-        if self._conn is not None:
-            if self._global_transaction is not None:
-                await self._global_transaction.__aexit__(None, None, None)
-                self._global_transaction = None
-
-            await self._pool.putconn(self._conn)
+        try:
+            if self._conn is not None:
+                try:
+                    if self._global_transaction is not None:
+                        await self._global_transaction.rollback()
+                finally:
+                    await self._conn.close()
+        finally:
+            self._global_transaction = None
             self._conn = None
-
-        await self._pool.close()
+            self._connected = False
+            await self._engine.dispose()
 
     @asynccontextmanager
     async def session(self) -> AsyncGenerator["Session"]:
-        if self._pool.closed:
+        if not self._connected:
             raise DatabaseNotConnectedError
 
         if self._conn is not None:
-            async with self._conn.transaction():
+            async with self._conn.begin_nested():
                 yield Session(self._conn)
         else:
-            async with self._pool.connection() as conn:  # noqa: SIM117
-                async with conn.transaction():
-                    yield Session(conn)
+            async with self._engine.begin() as conn:
+                yield Session(conn)
 
 
 class Session:
@@ -135,94 +119,60 @@ class Session:
     def __init__(self, conn: AsyncConnection):
         self._conn = conn
 
-    async def fetch_one(self, query: ClauseElement) -> Row | None:
-        async with self._execute(query) as cursor:
-            return await cursor.fetchone()
+    async def fetch_one(self, query: Executable) -> dict[str, Any] | None:
+        with await self._conn.execute(query) as result:
+            row = result.mappings().first()
+            return dict(row) if row is not None else None
 
-    async def fetch_all(self, query: ClauseElement) -> list[Row]:
-        async with self._execute(query) as cursor:
-            return await cursor.fetchall()
+    async def fetch_all(self, query: Executable) -> list[dict[str, Any]]:
+        with await self._conn.execute(query) as result:
+            return [dict(row) for row in result.mappings()]
 
-    async def execute(self, query: ClauseElement) -> int:
-        async with self._execute(query) as cursor:
-            return cursor.rowcount
+    async def execute(self, query: Executable) -> int:
+        with await self._conn.execute(
+            query, execution_options={"preserve_rowcount": True}
+        ) as result:
+            return result.rowcount
 
     async def stream(
-        self, query: ClauseElement, *, prefetch_size: int = 256
-    ) -> AsyncIterator[Row]:
+        self, query: Executable, *, prefetch_size: int = 256
+    ) -> AsyncIterator[dict[str, Any]]:
         if prefetch_size < 1:
             raise ValueError("prefetch_size must be at least 1")
 
-        async with self._execute_with_server_cursor(query) as cursor:
-            cursor.itersize = prefetch_size
-
-            async for row in cursor:
-                yield row
+        result = await self._conn.stream(
+            query, execution_options={"yield_per": prefetch_size}
+        )
+        try:
+            async for row in result.mappings():
+                yield dict(row)
+        finally:
+            await result.close()
 
     async def execute_many(
         self,
-        query: ClauseElement,
+        query: Executable,
         params: Iterable[Mapping[str, Any]],
     ) -> int:
-        """Execute a query multiple times with different parameters.
+        """Execute a statement with multiple parameter mappings.
 
-        The query must define all values as explicit bind parameters. Values
-        must be provided exclusively through `params`, not embedded in the
-        SQLAlchemy query itself.
-
-        Usage would roughly be like:
-
-            query = sa.insert(table).values(
-                val_a=sa.bindparam("val_a"),
-                val_b=sa.bindparam("val_b"),
-            )
-
-            await session.execute_many(
-                query,
-                [
-                    {"val_a": 1, "val_b": 2},
-                    {"val_a": 3, "val_b": 4},
-                ],
-            )
+        Define values using explicit bind parameters and supply them through
+        `params`. SQLAlchemy executemany does not support expanding or
+        literal-execute parameters. An empty iterable returns zero.
         """
 
-        compiled = _compile_query(query)
-        if isinstance(compiled, SQLCompiler) and (
-            compiled.post_compile_params or compiled.literal_execute_params
-        ):
-            raise ValueError(
-                "execute_many() does not support expanding or literal-execute parameters"
-            )
+        values = [dict(value) for value in params]
+        if not values:
+            return 0
 
-        processed_params = (_prepare_query(compiled, values)[1] for values in params)
-        async with self._conn.cursor() as cursor:
-            await cursor.executemany(
-                cast(LiteralString, compiled.string),
-                processed_params,
-            )
-            return cursor.rowcount
-
-    @asynccontextmanager
-    async def _execute(self, statement: ClauseElement) -> AsyncGenerator[AsyncCursor]:
-        query, params = _prepare_query(_compile_query(statement))
-
-        async with self._conn.cursor() as cursor:
-            await cursor.execute(query, params)
-            yield cursor
-
-    @asynccontextmanager
-    async def _execute_with_server_cursor(
-        self, statement: ClauseElement
-    ) -> AsyncGenerator[AsyncServerCursor]:
-        query, params = _prepare_query(_compile_query(statement))
-
-        async with self._conn.cursor(name=f"databasic_cursor_{uuid4()}") as cursor:
-            await cursor.execute(query, params)
-            yield cursor
+        with await self._conn.execute(
+            query, values, execution_options={"preserve_rowcount": True}
+        ) as result:
+            return result.rowcount
 
     @asynccontextmanager
     async def transaction(self) -> AsyncGenerator[None]:
-        async with self._conn.transaction():
+        async with self._conn.begin_nested():
             yield
 
 
@@ -236,39 +186,3 @@ class DatabaseWasAlreadyOpenedError(DatabasicError):
 
 class DatabaseNotConnectedError(DatabasicError):
     pass
-
-
-def _dict_row_factory(cursor: AsyncCursor) -> Callable[[Sequence[Any]], Row]:
-    fields = [c.name for c in cursor.description or ()]
-
-    def make_row(values: Sequence[Any]) -> Row:
-        return dict(zip(fields, values))
-
-    return make_row
-
-
-def _compile_query(statement: ClauseElement) -> Compiled:
-    return statement.compile(dialect=psycopg.dialect(paramstyle="pyformat"))
-
-
-def _prepare_query(
-    compiled: Compiled,
-    params: Mapping[str, Any] | None = None,
-) -> tuple[LiteralString, dict[str, Any]]:
-    if not isinstance(compiled, SQLCompiler):
-        return cast(LiteralString, compiled.string), dict(params or {})
-
-    expanded = compiled.construct_expanded_state(
-        dict(params) if params is not None else None,
-        escape_names=False,
-    )
-
-    processors = cast(dict[str, Callable[[Any], Any]], dict(compiled._bind_processors))
-    processors.update(expanded.processors)
-    processed_params = {
-        compiled.escaped_bind_names.get(name, name): (
-            processors[name](value) if name in processors else value
-        )
-        for name, value in expanded.parameters.items()
-    }
-    return cast(LiteralString, expanded.statement), processed_params

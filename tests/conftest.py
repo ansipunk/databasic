@@ -30,14 +30,8 @@ def test_db_creds() -> DatabaseCredentials:
 
 
 @pytest.fixture
-def test_db_conninfo(test_db_creds: DatabaseCredentials) -> str:
-    return (
-        f"host={test_db_creds.host} "
-        f"port={test_db_creds.port} "
-        f"user={test_db_creds.username} "
-        f"password={test_db_creds.password} "
-        f"dbname={test_db_creds.database}"
-    )
+def test_db_conninfo(test_db_url: sa.URL) -> str:
+    return test_db_url.render_as_string(hide_password=False)
 
 
 @pytest.fixture

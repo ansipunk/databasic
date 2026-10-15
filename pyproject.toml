@@ -1,6 +1,6 @@
 [project]
 name = "databasic"
-version = "0.3.0"
+version = "1.0.0"
 description = "Asynchronous database connection manager and query executor"
 readme = "README.md"
 license = "MIT"
@@ -24,9 +24,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "psycopg[binary,pool]>=3.2.0,<4",
-    "psycopg-pool>=3.2.0,<4",
-    "sqlalchemy>=2,<2.2",
+    "sqlalchemy[asyncio]>=2.0.28,<2.2",
 ]
 
 [project.urls]
@@ -41,6 +39,7 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "psycopg[binary]>=3.2.0,<4",
     "pytest>=9,<10",
     "pytest-asyncio>=1,<2",
     "pytest-cov>=7,<8",

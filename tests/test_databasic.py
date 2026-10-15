@@ -14,6 +14,9 @@ from sqlalchemy import (
     text,
     tuple_,
 )
+from sqlalchemy.exc import StatementError
+from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.pool import AsyncAdaptedQueuePool
 from sqlalchemy.schema import CreateTable, DropTable
 
 import databasic
@@ -35,9 +38,11 @@ def test_valid_pool_size(test_db_conninfo: str):
         pool_max_size=3,
     )
 
-    assert db._pool.min_size == 2
-    assert db._pool.max_size == 3
-    assert db._pool.closed
+    assert isinstance(db._engine, AsyncEngine)
+    assert isinstance(db._engine.pool, AsyncAdaptedQueuePool)
+    assert db._engine.pool.size() == 2
+    assert db._engine.pool.checkedout() == 0
+    assert not db._connected
 
 
 @pytest.mark.asyncio
@@ -324,8 +329,10 @@ async def test_execute_many_postcompile_parameters(
     async with databasic.Databasic(test_db_conninfo) as db:  # noqa: SIM117
         async with db.session() as session:
             query = select(bindparam("value", type_=String, **bind_options))  # ty: ignore[invalid-argument-type]
-            with pytest.raises(ValueError, match="does not support"):
-                await session.execute_many(query, [{"value": "Alice"}])
+            with pytest.raises(StatementError, match="can't be used"):
+                await session.execute_many(
+                    query, [{"value": "Alice"}, {"value": "Bob"}]
+                )
 
 
 @pytest.mark.asyncio
@@ -387,16 +394,14 @@ async def test_stream_custom_bind_processor(test_db_conninfo: str):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("close_early", [False, True], ids=["exhausted", "closed"])
 async def test_stream_closes_server_cursor(test_db_conninfo: str, close_early: bool):
-    cursor_query = text(
-        "SELECT name FROM pg_cursors WHERE name LIKE 'databasic_cursor_%'"
-    )
+    cursor_query = text("SELECT name FROM pg_cursors WHERE name LIKE 'c_%'")
     query = text("SELECT generate_series(1, 3) AS value")
 
     async with databasic.Databasic(test_db_conninfo) as db:  # noqa: SIM117
         async with db.session() as session:
             assert await session.fetch_all(cursor_query) == []
             stream = cast(
-                AsyncGenerator[databasic.Row, None],
+                AsyncGenerator[dict[str, Any], None],
                 session.stream(query, prefetch_size=1),
             )
             async with aclosing(stream):

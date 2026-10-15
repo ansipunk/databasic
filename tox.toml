@@ -13,6 +13,7 @@ pass_env = [
 deps = [
   { replace = "if", condition = "factor.sa20", then = [ "SQLAlchemy>=2,<2.1" ], extend = true },
   { replace = "if", condition = "factor.sa21", then = [ "SQLAlchemy>=2.1,<2.2" ], extend = true },
+  "psycopg[binary]>=3.2.0,<4",
   "pytest>=9,<10",
   "pytest-asyncio>=1,<2",
   "pytest-cov>=7,<8",

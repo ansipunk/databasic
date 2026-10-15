@@ -1,20 +1,33 @@
 # Databasic
 
-A small async database interface built on SQLAlchemy Core and psycopg.
-PostgreSQL is the only supported database.
+An opinionated async database API built on SQLAlchemy Core. Write SQLAlchemy
+queries, run them with straightforward methods, and get plain Python data back.
 
-SQLAlchemy Core handles query construction and compilation. Databasic handles
-connection and transaction lifetimes and executes the resulting queries directly
-through psycopg.
+## Why Databasic?
 
-SQLAlchemy bind processors convert input values for psycopg, including
-JSON/JSONB values and custom `TypeDecorator` bind processing. Returned values are
-decoded by psycopg; SQLAlchemy result processors are not applied.
+SQLAlchemy is a powerful SQL toolkit. Databasic keeps that foundation while
+providing a small execution API with sensible defaults and fewer decisions to
+make. Its purpose is not to add database capabilities, but to make everyday
+database work pleasant without exposing every option SQLAlchemy supports.
 
-Keep one Databasic instance and its connection pool open for the lifetime of
-your application. Open separate sessions as needed for individual units of work;
-each session borrows a connection from the pool, runs a transaction, and returns
-the connection when it exits. Close the pool when the application shuts down.
+- **Plain data:** fetch a dictionary, a list of dictionaries, or `None`. No row
+  proxies or result wrappers to work with.
+- **Straightforward methods:** `fetch_one()`, `fetch_all()`, `execute()`, and
+  `execute_many()` say what they do.
+- **Transactional sessions:** successful exit commits; an exception rolls back.
+  No separate `commit()` call. Use `transaction()` for a nested transaction.
+- **Simple streaming:** iterate over dictionaries and control the batch size
+  with `prefetch_size` (256 by default).
+- **Managed connections:** connect at application startup, open sessions for
+  units of work, and disconnect at shutdown. No engines or pools to manipulate.
+
+You still use SQLAlchemy Core to define tables and construct queries. SQLAlchemy
+handles pooling, query execution, streaming, and type processing, including
+JSON/JSONB and custom `TypeDecorator` types. Databasic handles connection and
+transaction lifetimes and converts rows into dictionaries.
+
+Use a database with an async SQLAlchemy dialect and driver. Install your chosen
+driver separately; Databasic does not bundle or select one.
 
 ## Installation
 
@@ -26,17 +39,23 @@ uv add databasic
 pip install databasic
 ```
 
+Also install the async driver for your database, such as `psycopg[binary]` for
+PostgreSQL, `asyncmy` for MySQL, or `aiosqlite` for SQLite. Use an explicit
+SQLAlchemy driver URL such as `postgresql+psycopg://...`, `mysql+asyncmy://...`,
+or `sqlite+aiosqlite:///database.db`.
+
 ## Quickstart
 
-You need Python 3.11 or newer and Docker/Podman. Run the following commands from
-the root of a local checkout of this repository.
+This example uses PostgreSQL with psycopg. You need Python 3.11 or newer and
+Docker/Podman. Run the following commands from the root of a local checkout of
+this repository.
 
 ### 1. Install Databasic
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install .
+python -m pip install . "psycopg[binary]"
 ```
 
 ### 2. Start PostgreSQL
@@ -80,7 +99,7 @@ users = sa.Table(
 
 async def main():
     async with Databasic(
-        "postgresql://databasic:databasic@localhost:5432/databasic"
+        "postgresql+psycopg://databasic:databasic@localhost:5432/databasic"
     ) as db:
         async with db.session() as session:
             await session.execute(sa.schema.CreateTable(users, if_not_exists=True))
@@ -128,6 +147,11 @@ docker rm -fv databasic-quickstart
 
 ## Usage
 
+Keep one Databasic instance and its connection pool open for the lifetime of
+your application. Open separate sessions as needed for individual units of work;
+each session borrows a connection from the pool, runs a transaction, and returns
+the connection when it exits. Close the pool when the application shuts down.
+
 ```python
 import sqlalchemy as sa
 
@@ -140,7 +164,7 @@ users = sa.Table(
     sa.Column("name", sa.Text, nullable=False),
 )
 
-db = Databasic("postgresql://user:password@localhost/database")
+db = Databasic("postgresql+psycopg://user:password@localhost/database")
 
 async with db:
     async with db.session() as session:
@@ -154,7 +178,7 @@ the same semantics; explicit lifecycle management is useful when the lifetime is
 controlled by an application or framework.
 
 ```python
-db = Databasic("postgresql://user:password@localhost/database")
+db = Databasic("postgresql+psycopg://user:password@localhost/database")
 
 await db.connect()
 
@@ -171,7 +195,7 @@ rolls back when it exits with an exception.
 A previously closed database cannot be reused. This will throw an exception.
 
 ```python
-db = Databasic("postgresql://user:password@localhost/database")
+db = Databasic("postgresql+psycopg://user:password@localhost/database")
 
 async with db:
     pass
@@ -186,12 +210,27 @@ async with db:
 ### `Databasic`
 
 ```python
-db = Databasic(conninfo, force_rollback=False)
+db = Databasic(
+    url,
+    force_rollback=False,
+    pool_min_size=4,
+    pool_max_size=4,
+)
 ```
+
+`url` must be a SQLAlchemy URL string or `sqlalchemy.URL` object naming an
+async driver, not a libpq `host=... dbname=...` connection string. The URL is
+passed unchanged to SQLAlchemy; install the driver it specifies separately.
+
+Databasic uses SQLAlchemy's async queue pool. Connections are created lazily.
+`pool_min_size` is the retained
+pool capacity (at least 1), not a number of connections opened eagerly.
+`pool_max_size` is the total connection limit, including overflow connections,
+and must be at least `pool_min_size`.
 
 #### `connect()`
 
-Open the connection pool.
+Validate connectivity and enable sessions. Additional connections open on demand.
 
 ```python
 await db.connect()
@@ -253,9 +292,11 @@ assert rows_affected == 2
 ```
 
 The statement must define its values using explicit bind parameters. Values are
-supplied exclusively through the parameter mappings. Expanding parameters
-(such as variable-length `IN` lists) and literal-execute parameters are not
-supported by `execute_many()`.
+supplied exclusively through the parameter mappings. The iterable is materialized
+before execution; an empty iterable returns `0`. SQLAlchemy does not support
+expanding parameters (such as variable-length `IN` lists) or literal-execute
+parameters when executing multiple parameter sets. Execution errors are exposed
+as SQLAlchemy exceptions.
 
 #### `fetch_one()`
 
@@ -294,6 +335,19 @@ The result has the shape:
 ]
 ```
 
+#### `stream()`
+
+Stream dictionaries using a server-side cursor without buffering all rows:
+
+```python
+async for row in session.stream(users.select(), prefetch_size=256):
+    print(row)
+```
+
+`prefetch_size` must be at least 1. Streaming requires support from the selected
+dialect and driver. If stopping early, close the async generator with
+`contextlib.aclosing()` so its cursor is released immediately.
+
 #### `transaction()`
 
 Create a nested transaction within the current session.
@@ -310,7 +364,7 @@ async with db.session() as session:
         )
 ```
 
-Nested transactions use database savepoints. An exception rolls back the nested
+Nested transactions require database savepoint support. An exception rolls back the nested
 transaction. Catch it within the outer session to preserve earlier work;
 otherwise, it also causes the session to roll back.
 
@@ -321,11 +375,16 @@ rolled back when Databasic is disconnected.
 
 ```python
 async with Databasic(
-    "postgresql://user:password@localhost/test_database",
+    "postgresql+psycopg://user:password@localhost/test_database",
     force_rollback=True,
 ) as db:
     ...
 ```
 
 This allows integration tests to use normal sessions and transactions without
-leaving persistent database state.
+leaving persistent database state, subject to the database's transaction semantics
+(for example, some databases auto-commit DDL). This mode requires savepoint
+support. Sessions share one connection and must not run concurrently.
+
+The repository's integration tests use PostgreSQL and psycopg. Install the dev
+dependency group with `uv sync --group dev` to run them.
