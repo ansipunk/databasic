@@ -140,14 +140,11 @@ class Session:
         if prefetch_size < 1:
             raise ValueError("prefetch_size must be at least 1")
 
-        result = await self._conn.stream(
+        async with self._conn.stream(
             query, execution_options={"yield_per": prefetch_size}
-        )
-        try:
+        ) as result:
             async for row in result.mappings():
                 yield dict(row)
-        finally:
-            await result.close()
 
     async def execute_many(
         self,
