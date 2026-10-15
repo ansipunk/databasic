@@ -140,11 +140,17 @@ class Session:
         if prefetch_size < 1:
             raise ValueError("prefetch_size must be at least 1")
 
-        async with self._conn.stream(
+        # SQLAlchemy's stream context manager skips result.close() on
+        # GeneratorExit, which aclose() injects when this generator is suspended
+        # at yield. Close explicitly in finally so early closure frees the cursor.
+        result = await self._conn.stream(
             query, execution_options={"yield_per": prefetch_size}
-        ) as result:
+        )
+        try:
             async for row in result.mappings():
                 yield dict(row)
+        finally:
+            await result.close()
 
     async def execute_many(
         self,
