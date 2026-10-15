@@ -386,5 +386,25 @@ leaving persistent database state, subject to the database's transaction semanti
 (for example, some databases auto-commit DDL). This mode requires savepoint
 support. Sessions share one connection and must not run concurrently.
 
-The repository's integration tests use PostgreSQL and psycopg. Install the dev
-dependency group with `uv sync --group dev` to run them.
+The repository's tests always run against SQLite using `aiosqlite`, with a
+separate temporary database for each test. Install the dev dependencies and run:
+
+```sh
+uv sync --group dev
+make test
+```
+
+To also test MySQL/MariaDB (`asyncmy`) or PostgreSQL (`psycopg`), set either or
+both connection URLs before running `make test` or `make tox`:
+
+```sh
+export DATABASIC_TEST_DB_MYSQL_URL='mysql+asyncmy://user:password@localhost/databasic_test'
+export DATABASIC_TEST_DB_POSTGRESQL_URL='postgresql+psycopg://user:password@localhost/databasic_test'
+make test
+```
+
+Unset or empty URLs leave that backend disabled. Configured backends must be
+reachable; connection failures fail the tests rather than silently skipping them.
+Use disposable test databases with permission to create and drop tables. Tests
+that require PostgreSQL-specific features are skipped on other backends. CI runs
+SQLite, MariaDB, and PostgreSQL.

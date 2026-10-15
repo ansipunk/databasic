@@ -15,12 +15,25 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     env:
-      DATABASIC_TEST_DB_HOST: postgres
+      DATABASIC_TEST_DB_MYSQL_URL: mysql+asyncmy://databasic:databasic@mariadb/databasic_test
+      DATABASIC_TEST_DB_POSTGRESQL_URL: postgresql+psycopg://postgres:postgres@postgres/postgres
 
     container:
-      image: python:3.14
+      image: python:3.15
 
     services:
+      mariadb:
+        image: mariadb:13.0.2-ubi
+        env:
+          MARIADB_ROOT_PASSWORD: root
+          MARIADB_DATABASE: databasic_test
+          MARIADB_USER: databasic
+          MARIADB_PASSWORD: databasic
+        options: >-
+          --health-cmd "healthcheck.sh --connect --innodb_initialized"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
       postgres:
         image: postgres:18
         env:
@@ -48,12 +61,25 @@ jobs:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     env:
-      DATABASIC_TEST_DB_HOST: postgres
+      DATABASIC_TEST_DB_MYSQL_URL: mysql+asyncmy://databasic:databasic@mariadb/databasic_test
+      DATABASIC_TEST_DB_POSTGRESQL_URL: postgresql+psycopg://postgres:postgres@postgres/postgres
 
     container:
-      image: python:3.14
+      image: python:3.15
 
     services:
+      mariadb:
+        image: mariadb:13.0.2-ubi
+        env:
+          MARIADB_ROOT_PASSWORD: root
+          MARIADB_DATABASE: databasic_test
+          MARIADB_USER: databasic
+          MARIADB_PASSWORD: databasic
+        options: >-
+          --health-cmd "healthcheck.sh --connect --innodb_initialized"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
       postgres:
         image: postgres:18
         env:
@@ -82,7 +108,7 @@ jobs:
     needs: test-master
 
     container:
-      image: python:3.14
+      image: python:3.15
 
     permissions:
       id-token: write

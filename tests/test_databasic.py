@@ -4,7 +4,7 @@ from typing import Any, cast
 
 import pytest
 from sqlalchemy import (
-    Engine,
+    URL,
     String,
     Table,
     TypeDecorator,
@@ -218,13 +218,15 @@ async def test_execute_many_json(
 @pytest.mark.parametrize("column_name", ["json_val", "jsonb_val"])
 async def test_fetch_json(
     temp_table: Table,
-    test_db_engine: Engine,
+    test_db_engine: AsyncEngine,
     test_db_conninfo: str,
     column_name: str,
     json_value: Any,
 ):
-    with test_db_engine.begin() as conn:
-        conn.execute(temp_table.insert().values(int_val=1, **{column_name: json_value}))
+    async with test_db_engine.begin() as conn:
+        await conn.execute(
+            temp_table.insert().values(int_val=1, **{column_name: json_value})
+        )
 
     async with databasic.Databasic(test_db_conninfo) as db:  # noqa: SIM117
         async with db.session() as session:
@@ -243,7 +245,11 @@ async def test_jsonb_expanding_parameters(
     test_db_conninfo: str,
     json_value: Any,
     tuple_values: bool,
+    test_db_url: URL,
 ):
+    if test_db_url.get_backend_name() != "postgresql":
+        pytest.skip("JSONB comparisons require PostgreSQL")
+
     async with databasic.Databasic(test_db_conninfo) as db:  # noqa: SIM117
         async with db.session() as session:
             await session.execute(
@@ -393,7 +399,12 @@ async def test_stream_custom_bind_processor(test_db_conninfo: str):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("close_early", [False, True], ids=["exhausted", "closed"])
-async def test_stream_closes_server_cursor(test_db_conninfo: str, close_early: bool):
+async def test_stream_closes_server_cursor(
+    test_db_conninfo: str, close_early: bool, test_db_url: URL
+):
+    if test_db_url.get_backend_name() != "postgresql":
+        pytest.skip("Named server-side cursor inspection requires PostgreSQL")
+
     cursor_query = text("SELECT name FROM pg_cursors WHERE name LIKE 'c_%'")
     query = text("SELECT generate_series(1, 3) AS value")
 
@@ -440,15 +451,14 @@ async def test_basic_operations(temp_table: Table, test_db_conninfo: str):
     str_val = "Test"
 
     async with db.session() as session:
-        insert_query = (
-            temp_table.insert()
-            .values(
-                int_val=int_val,
-                str_val=str_val,
-            )
-            .returning(*temp_table.c)
+        insert_query = temp_table.insert().values(
+            int_val=int_val,
+            str_val=str_val,
         )
-        inserted_row = cast(dict[str, Any], await session.fetch_one(insert_query))
+        assert await session.execute(insert_query) == 1
+        inserted_row = cast(
+            dict[str, Any], await session.fetch_one(temp_table.select())
+        )
 
         assert inserted_row["id"] is not None
         assert inserted_row["int_val"] == int_val
@@ -481,6 +491,27 @@ async def test_basic_operations(temp_table: Table, test_db_conninfo: str):
         assert len(fetched_rows) == 0
 
     await db.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_insert_returning(
+    temp_table: Table, test_db_conninfo: str, test_db_engine: AsyncEngine
+):
+    if not test_db_engine.dialect.insert_returning:
+        pytest.skip("This backend does not support INSERT RETURNING")
+
+    async with databasic.Databasic(test_db_conninfo) as db:  # noqa: SIM117
+        async with db.session() as session:
+            query = (
+                temp_table.insert()
+                .values(int_val=5, str_val="Test")
+                .returning(*temp_table.c)
+            )
+            row = await session.fetch_one(query)
+            assert row is not None
+            assert row["id"] is not None
+            assert row["int_val"] == 5
+            assert row["str_val"] == "Test"
 
 
 @pytest.mark.asyncio

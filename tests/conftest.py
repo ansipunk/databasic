@@ -1,32 +1,23 @@
 import os
 import uuid
-from collections.abc import Iterator
-from dataclasses import dataclass
+from collections.abc import AsyncIterator, Iterator
+from pathlib import Path
 from typing import Any
 
 import pytest
+import pytest_asyncio
 import sqlalchemy as sa
+from sqlalchemy import event
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
-
-@dataclass
-class DatabaseCredentials:
-    host: str
-    port: int
-    username: str
-    password: str
-    database: str
-
-
-@pytest.fixture
-def test_db_creds() -> DatabaseCredentials:
-    return DatabaseCredentials(
-        host=os.environ.get("DATABASIC_TEST_DB_HOST", "127.0.0.1"),
-        port=int(os.environ.get("DATABASIC_TEST_DB_PORT", "5432")),
-        username=os.environ.get("DATABASIC_TEST_DB_USERNAME", "postgres"),
-        password=os.environ.get("DATABASIC_TEST_DB_PASSWORD", "postgres"),
-        database=os.environ.get("DATABASIC_TEST_DB_DATABASE", "postgres"),
-    )
+DATABASE_URLS = [pytest.param(None, id="aiosqlite")]
+for driver, env_var in [
+    ("asyncmy", "DATABASIC_TEST_DB_MYSQL_URL"),
+    ("psycopg", "DATABASIC_TEST_DB_POSTGRESQL_URL"),
+]:
+    if url := os.environ.get(env_var):
+        DATABASE_URLS.append(pytest.param(url, id=driver))
 
 
 @pytest.fixture
@@ -34,30 +25,51 @@ def test_db_conninfo(test_db_url: sa.URL) -> str:
     return test_db_url.render_as_string(hide_password=False)
 
 
-@pytest.fixture
-def test_db_url(test_db_creds: DatabaseCredentials) -> sa.URL:
-    return sa.URL.create(
-        drivername="postgresql+psycopg",
-        username=test_db_creds.username,
-        password=test_db_creds.password,
-        host=test_db_creds.host,
-        port=test_db_creds.port,
-        database=test_db_creds.database,
-    )
+@pytest.fixture(params=DATABASE_URLS)
+def test_db_url(request: pytest.FixtureRequest, tmp_path: Path) -> sa.URL:
+    if request.param is None:
+        return sa.URL.create(
+            "sqlite+aiosqlite", database=str(tmp_path / "databasic.db")
+        )
+    return sa.make_url(request.param)
 
 
-@pytest.fixture
-def test_db_engine(test_db_url: sa.URL) -> Iterator[sa.Engine]:
-    engine = sa.create_engine(test_db_url)
+@pytest.fixture(autouse=True)
+def sqlite_transactions(test_db_url: sa.URL) -> Iterator[None]:
+    if test_db_url.get_backend_name() != "sqlite":
+        yield
+        return
+
+    # Disable SQLite's legacy transaction control so savepoints participate in
+    # the outer transaction, including in Databasic's force_rollback mode.
+    def on_connect(dbapi_connection: Any, connection_record: Any) -> None:
+        _ = connection_record
+        dbapi_connection.isolation_level = None
+
+    def on_begin(conn: sa.Connection) -> None:
+        conn.exec_driver_sql("BEGIN")
+
+    event.listen(sa.Engine, "connect", on_connect)
+    event.listen(sa.Engine, "begin", on_begin)
+    try:
+        yield
+    finally:
+        event.remove(sa.Engine, "begin", on_begin)
+        event.remove(sa.Engine, "connect", on_connect)
+
+
+@pytest_asyncio.fixture
+async def test_db_engine(test_db_url: sa.URL) -> AsyncIterator[AsyncEngine]:
+    engine = create_async_engine(test_db_url)
 
     try:
         yield engine
     finally:
-        engine.dispose()
+        await engine.dispose()
 
 
-@pytest.fixture
-def temp_table(test_db_engine: sa.Engine) -> Iterator[sa.Table]:
+@pytest_asyncio.fixture
+async def temp_table(test_db_engine: AsyncEngine) -> AsyncIterator[sa.Table]:
     metadata = sa.MetaData()
 
     table = sa.Table(
@@ -67,17 +79,19 @@ def temp_table(test_db_engine: sa.Engine) -> Iterator[sa.Table]:
         sa.Column("int_val", sa.Integer, nullable=False),
         sa.Column("str_val", sa.Text, nullable=True),
         sa.Column("json_val", sa.JSON, nullable=True),
-        sa.Column("jsonb_val", JSONB, nullable=True),
+        sa.Column(
+            "jsonb_val", sa.JSON().with_variant(JSONB, "postgresql"), nullable=True
+        ),
     )
 
-    with test_db_engine.begin() as conn:
-        metadata.create_all(conn)
+    async with test_db_engine.begin() as conn:
+        await conn.run_sync(metadata.create_all)
 
     try:
         yield table
     finally:
-        with test_db_engine.begin() as conn:
-            table.drop(conn)
+        async with test_db_engine.begin() as conn:
+            await conn.run_sync(table.drop)
 
 
 @pytest.fixture(
