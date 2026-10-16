@@ -34,20 +34,27 @@ class Databasic:
         url: str | URL,
         *,
         force_rollback: bool = False,
-        pool_min_size: int = 4,
-        pool_max_size: int = 4,
+        pool_min_size: int | None = None,
+        pool_max_size: int | None = None,
     ):
-        if pool_min_size > pool_max_size:
-            raise ValueError("Pool max size cannot be less than min size")
-        if pool_min_size < 1:
-            raise ValueError("Pool min size must be at least 1")
+        engine_kwargs = {}
 
-        self._engine = create_async_engine(
-            url,
-            poolclass=AsyncAdaptedQueuePool,
-            pool_size=pool_min_size,
-            max_overflow=pool_max_size - pool_min_size,
-        )
+        if pool_min_size is not None or pool_max_size is not None:
+            min_size = pool_min_size if pool_min_size is not None else 4
+            max_size = pool_max_size if pool_max_size is not None else 8
+
+            if min_size > max_size:
+                raise ValueError("Pool max size cannot be less than min size")
+            if min_size < 1:
+                raise ValueError("Pool min size must be at least 1")
+
+            engine_kwargs.update(
+                poolclass=AsyncAdaptedQueuePool,
+                pool_size=min_size,
+                max_overflow=max_size - min_size,
+            )
+
+        self._engine = create_async_engine(url, **engine_kwargs)
         self._force_rollback = force_rollback
 
     async def __aenter__(self) -> Self:
